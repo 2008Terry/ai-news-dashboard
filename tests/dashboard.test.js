@@ -21,6 +21,38 @@ const item = (overrides = {}) => ({
   ...overrides,
 });
 
+function createFakeDocument() {
+  const elements = new Map();
+  const created = [];
+  const createElement = (tagName) => {
+    const node = {
+      tagName: tagName.toUpperCase(),
+      className: '',
+      textContent: '',
+      dataset: {},
+      attributes: {},
+      children: [],
+      hidden: false,
+      classList: { toggle() {} },
+      append(...children) { this.children.push(...children); },
+      replaceChildren(...children) { this.children = children; },
+      setAttribute(name, value) { this.attributes[name] = value; },
+      matches(selector) { return selector === 'button[data-category]' && this.tagName === 'BUTTON' && Boolean(this.dataset.category); },
+    };
+    created.push(node);
+    return node;
+  };
+  const doc = {
+    createElement,
+    getElementById(id) {
+      if (!elements.has(id)) elements.set(id, createElement('div'));
+      return elements.get(id);
+    },
+    querySelectorAll(selector) { return created.filter((node) => node.matches(selector)); },
+  };
+  return { doc, elements };
+}
+
 test('validates complete news items and rejects unsafe links', () => {
   assert.equal(typeof dashboard?.isValidItem, 'function');
   assert.equal(dashboard.isValidItem(item()), true);
@@ -119,4 +151,52 @@ test('saved view clears a specific date so saved stories can span the archive', 
   const filtered = dashboard.toggleSavedFilter({ date: '2026-09-28', savedOnly: false });
   assert.deepEqual(filtered, { date: 'all', savedOnly: true });
   assert.deepEqual(dashboard.toggleSavedFilter(filtered), { date: 'all', savedOnly: false });
+});
+
+test('renders five featured cards, overflow in the feed, and update metadata', () => {
+  const { doc, elements } = createFakeDocument();
+  const items = Array.from({ length: 6 }, (_, index) => item({
+    id: `story-${index}`,
+    title: `Story ${index}`,
+    url: `https://example.com/story-${index}`,
+    rank: 100 - index,
+  }));
+
+  const result = dashboard.renderDashboard({
+    generatedAt: '2026-09-28T08:00:00-04:00',
+    status: 'partial',
+    sourceNotes: ['arXiv temporarily unavailable'],
+    items,
+  }, {}, doc);
+
+  assert.equal(result.featured.length, 5);
+  assert.equal(result.remaining.length, 1);
+  assert.equal(elements.get('featuredGrid').children.length, 5);
+  assert.equal(elements.get('feedList').children.length, 1);
+  const featuredCard = elements.get('featuredGrid').children[0];
+  const sourceLink = featuredCard.children[1].children[0].children[0];
+  assert.equal(sourceLink.href, 'https://example.com/story-0');
+  assert.equal(sourceLink.target, '_blank');
+  assert.equal(sourceLink.rel, 'noopener noreferrer');
+  const actions = featuredCard.children[2].children[1].children;
+  assert.deepEqual(actions.map((button) => button.dataset.action), ['save', 'read']);
+  assert.equal(elements.get('emptyState').hidden, true);
+  assert.match(elements.get('updatedLabel').textContent, /^Updated /);
+  assert.match(elements.get('statusMessage').textContent, /arXiv temporarily unavailable/);
+  assert.equal(elements.get('statusMessage').hidden, false);
+});
+
+test('malformed or empty data shows an empty archive without throwing', () => {
+  const { doc, elements } = createFakeDocument();
+  const result = dashboard.renderDashboard({
+    generatedAt: 'invalid timestamp',
+    status: 'partial',
+    sourceNotes: ['Source check failed'],
+    items: [item({ url: 'javascript:alert(1)' })],
+  }, {}, doc);
+
+  assert.equal(result.allItems.length, 0);
+  assert.equal(elements.get('emptyState').hidden, false);
+  assert.equal(elements.get('updatedLabel').textContent, 'Waiting for first update');
+  assert.equal(elements.get('statusMessage').hidden, false);
 });
